@@ -46,7 +46,7 @@ static int               g_pace_on;
 /* decode-ahead ring: producer (decoder) parks frames, presenter pops them
  * on a fixed deadline grid.  Decode bursts land in the queue instead of
  * stretching the inter-frame interval -> no visible hitching.            */
-#define RING_N 16
+#define RING_N 32
 #define RING_MASK (RING_N - 1)
 static AVFrame          *g_ring[RING_N];
 static volatile int      g_rh, g_rt;       /* consumer / producer cursor   */
@@ -112,8 +112,14 @@ static void rp_pump(void)
                    g_rts[g_nfts-1] - g_rts[g_nfts-2], g_rh, g_rt);
         unsigned long long n2_tsc = __builtin_ia32_rdtsc();
         unsigned long long n2 = now_ns();
-        g_next_dl_tsc += g_slot_tsc;
-        g_next_dl += (unsigned long long)g_slot_ns;
+        if ((long long)(n2_tsc - g_next_dl_tsc) > 2LL * (long long)g_slot_tsc)
+            g_next_dl_tsc = n2_tsc + g_slot_tsc;
+        else
+            g_next_dl_tsc += g_slot_tsc;
+        if ((long long)(n2 - g_next_dl) > 2LL * g_slot_ns)
+            g_next_dl = n2 + (unsigned long long)g_slot_ns;  /* resync    */
+        else
+            g_next_dl += (unsigned long long)g_slot_ns;
     }
 }
 #endif
