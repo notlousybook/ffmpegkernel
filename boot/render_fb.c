@@ -236,10 +236,9 @@ void fb_render(const void *framep)
               dst, dstls);
 }
 
-/* quality toggle: 0 = speed, 1 = high-quality bilinear precomputed */
+/* quality toggle: 0 = speed (SWS_POINT), 1 = high-quality bilinear precomputed */
 void fb_set_quality(int high){
     g_fb_high_quality = high ? 1 : 0;
-    // force re-create scaler with new flags
     if (g_sws && g_srcw && g_srch){
         int flags = g_fb_high_quality ? SWS_BILINEAR : SWS_FAST_BILINEAR;
         struct SwsContext *old = g_sws;
@@ -251,8 +250,7 @@ void fb_set_quality(int high){
 void fb_set_scaler(int srcw, int srch)
 {
     g_srcw = srcw; g_srch = srch;
-    int flags = g_fb_high_quality ? SWS_BILINEAR : (SWS_FAST_BILINEAR);
-    // precomputed: use cached context which keeps filter coefficients precomputed
+    int flags = g_fb_high_quality ? SWS_BILINEAR : SWS_FAST_BILINEAR;
     g_sws = sws_getCachedContext(g_sws, srcw, srch, AV_PIX_FMT_YUV420P,
                                  g_w,  g_h,  AV_PIX_FMT_BGRA,
                                  flags, NULL, NULL, NULL);

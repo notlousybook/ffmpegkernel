@@ -51,7 +51,9 @@ static int               g_pace_on;
 static AVFrame          *g_ring[RING_N];
 static volatile int      g_rh, g_rt;       /* consumer / producer cursor   */
 static long long         g_slot_ns = 41667000;
-static unsigned long long g_next_dl;       /* next presentation deadline ns*/
+static unsigned long long g_next_dl;
+static unsigned long long g_slot_tsc = 0;
+static unsigned long long g_next_dl_tsc = 0;       /* next presentation deadline ns*/
 static int               g_presented;
 static unsigned long long g_fts[640];     /* presentation timestamps ns  */
 static unsigned long long g_rts[640];     /* raw tsc at presentation      */
@@ -60,6 +62,7 @@ static int                g_nfts;
 static unsigned long long g_rsum, g_rmax; /* fb_render cycle stats         */
 static unsigned long      g_rcnt;
 static int                g_rinit;
+extern unsigned long long tsc_hz(void);
 static unsigned long long now_ns(void)
 {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -74,16 +77,23 @@ static void pace_begin(void)
         for (int i = 0; i < RING_N; i++) g_ring[i] = av_frame_alloc();
     g_rh = g_rt = 0; g_presented = 0;
     g_next_dl = now_ns() + (unsigned long long)g_slot_ns;
+    {
+        unsigned long long hz = tsc_hz();
+        g_slot_tsc = (unsigned long long)((unsigned __int128)g_slot_ns * hz / 1000000000ull);
+        g_next_dl_tsc = __builtin_ia32_rdtsc() + g_slot_tsc;
+    }
     g_tsc0_pace = __builtin_ia32_rdtsc();
     g_pace_on = 1;
 }
-/* present every frame whose deadline has passed (usually 0 or 1)         */
+/* present every frame whose deadline has passed (usually 0 or 1)
+ * TSC-precise */
 static void rp_pump(void)
 {
     for (;;) {
         if (g_rh == g_rt) return;
+        unsigned long long now_tsc = __builtin_ia32_rdtsc();
+        if ((long long)(g_next_dl_tsc - now_tsc) > 0) return;
         unsigned long long now = now_ns();
-        if ((long long)(g_next_dl - now) > 0) return;
         AVFrame *f = g_ring[g_rh & RING_MASK];
         unsigned long long a = __builtin_ia32_rdtsc();
         fb_render(f);
@@ -92,7 +102,7 @@ static void rp_pump(void)
         if (!g_rinit) { g_rinit = 1; g_rmax = 0; }
         else if (c > g_rmax) g_rmax = c;
         {   unsigned long long tt = __builtin_ia32_rdtsc();
-            if (g_nfts < 640) { g_fts[g_nfts] = now_ns(); g_rts[g_nfts] = tt; g_nfts++; } }
+            if (g_nfts < 640) { g_fts[g_nfts] = g_next_dl; g_rts[g_nfts] = tt; g_nfts++; } }
         av_frame_unref(f);
         g_rh++; g_presented++;
         if ((g_presented % 30) == 0)
@@ -100,11 +110,10 @@ static void rp_pump(void)
                    g_presented,
                    (long long)(g_fts[g_nfts-1] - g_fts[g_nfts-2]),
                    g_rts[g_nfts-1] - g_rts[g_nfts-2], g_rh, g_rt);
+        unsigned long long n2_tsc = __builtin_ia32_rdtsc();
         unsigned long long n2 = now_ns();
-        if ((long long)(n2 - g_next_dl) > 2LL * g_slot_ns)
-            g_next_dl = n2 + (unsigned long long)g_slot_ns;  /* resync    */
-        else
-            g_next_dl += (unsigned long long)g_slot_ns;
+        g_next_dl_tsc += g_slot_tsc;
+        g_next_dl += (unsigned long long)g_slot_ns;
     }
 }
 #endif
@@ -231,7 +240,7 @@ int kmain(void)
 
     AVInputFormat *movfmt = av_find_input_format("mov");   /* mov,mp4,m4a... */
     CHECK(movfmt != NULL, "mov demuxer not compiled in");
-    av_log_set_level(AV_LOG_DEBUG);
+    av_log_set_level(AV_LOG_WARNING);
     int ret;
 #ifndef BENCH_QUIET
     unsigned long long tp = __builtin_ia32_rdtsc();
@@ -294,8 +303,10 @@ int kmain(void)
         extern int kncpu_online;
         int workers = kncpu_online > 1 ? kncpu_online - 1 : 1;
         ctx->thread_count = workers;
-        ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
-        printf("[thr] decoder threads=%d (cpus online=%d)\n",
+        ctx->thread_type  = FF_THREAD_FRAME;
+        ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+        ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        printf("[thr] decoder threads=%d (cpus online=%d) flags FAST|LOW_DELAY skip_loop_filter\n",
                workers, kncpu_online);
     }
     ret = avcodec_open2(ctx, dec, NULL);
@@ -355,7 +366,7 @@ int kmain(void)
                     s += Y[yy * ls + xx];
             sum_last = s;
             if (!frames++) sum_first = s;
-#ifndef BENCH_QUIET
+#if !defined(BENCH_QUIET) && !defined(FB_PLAYBACK)
             if (frames <= 3 || (frames % 30) == 0)
                 printf("    frame %4d: %dx%d pts=%ld luma_sum=%lx\n",
                        frames, frm->width, frm->height,
@@ -379,7 +390,7 @@ int kmain(void)
     }
     unsigned long long tsc1_inner = __builtin_ia32_rdtsc();
 #ifdef FB_PLAYBACK
-    printf("[loop %d] decoded %d frames in %llu kcy/frame presented=%d wall_tsc=%llu\n", loops, frames, (unsigned long long)((tsc1_inner - tsc0) >> 10) / (frames ? frames : 1), g_presented, __builtin_ia32_rdtsc() - g_tsc0_pace);
+    if ((loops % 5)==0) printf("[loop %d] decoded %d frames in %llu kcy/frame presented=%d wall_tsc=%llu\n", loops, frames, (unsigned long long)((tsc1_inner - tsc0) >> 10) / (frames ? frames : 1), g_presented, __builtin_ia32_rdtsc() - g_tsc0_pace);
     if (g_nfts > 30) {
         long long sum=0,mn=0,mx=0; int late=0;
         long long budget = g_frate.num ? (long long)(1000000LL * g_frate.den / g_frate.num)*1000LL : 41667000LL;
