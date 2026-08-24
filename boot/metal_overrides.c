@@ -14,6 +14,9 @@ static inline void outb_(unsigned short p, unsigned char v)
 static inline unsigned char inb_(unsigned short p)
     { unsigned char v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
 
+/* weak fallback so kernel.elf (no ramfb) links; movie_mt.elf's strong wins */
+int __attribute__((weak)) g_fb_high_quality = 0;
+
 extern int smp_tsc_deadline_ok;
 void lapic_timer_arm_tscdeadline(unsigned long long ticks);
 
@@ -52,10 +55,9 @@ u64t tsc_hz(void) { return g_hz; }
 
 static inline u64t tsc_ns(void)
 {
-    /* split sec/rem: rdtsc()*1e9 would wrap a u64 after ~5.3 s @3.5 GHz */
+    /* single 128-bit multiply+div: 3.5GHz *1e9 fits in 73 bits, no overflow before div */
     u64t t = __builtin_ia32_rdtsc();
-    u64t s = t / g_hz, r = t % g_hz;   /* r*1e9 < ~5.8e18: no overflow   */
-    return s * 1000000000ull + r * 1000000000ull / g_hz;
+    return (u64t)((unsigned __int128)t * 1000000000ull / g_hz);
 }
 
 static unsigned char cmos_rd(unsigned char reg)
@@ -138,6 +140,22 @@ void metal_time_init(void)
                 if (cluster >= 3 && med > 2800000000ull &&
                     med < 4200000000ull) { g_hz = med; return; }
             }
+        }
+    }
+
+    /* CPUID 0x15 TSC frequency (invariant TSC, modern Intel/AMD) */
+    {
+        unsigned a,b,c,d;
+        __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x15));
+        if (a && b && c) {
+            unsigned long long hz = (unsigned long long)c * b / a;
+            if (hz > 2800000000ull && hz < 4200000000ull) { g_hz = hz; return; }
+        }
+        __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x16));
+        /* leaf 0x16 eax = base freq MHz */
+        if (a) {
+            unsigned long long hz = (unsigned long long)(a & 0xFFFF) * 1000000ull;
+            if (hz > 2800000000ull && hz < 4200000000ull) { g_hz = hz; return; }
         }
     }
 

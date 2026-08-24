@@ -102,16 +102,27 @@ void metal_main(unsigned long sip)
     metal_time_init();                  /* calibrate TSC against RTC 1 s   */
     printf("[cal] g_hz=%llu\n", (unsigned long long)tsc_hz());
 
-    /* raw-TSC probe mode: "tscprobe" in cmdline spins a fixed cycle count
-     * between two serial markers - host measures true guest TSC rate      */
+    /* parse cmdline extras: "tscprobe", "quality"/"highq", "fast" */
+    extern int g_fb_high_quality;
     if (si->cmdline_paddr) {
         const char *cl = (const void *)(unsigned long)si->cmdline_paddr;
         int probe = 0;
-        for (const char *p = cl; *p; p++) {           /* strstr, no libc   */
+        int want_quality = 0, want_fast = 0;
+        for (const char *p = cl; *p; p++) {
             const char *q = p, *r = "tscprobe";
             while (*r && *q == *r) { q++; r++; }
             if (!*r) { probe = 1; break; }
         }
+        for (const char *p = cl; *p; p++) {
+            // check for "quality" or "highq"
+            const char *a = p, *b = "quality"; int m=1;
+            while(*b && *a==*b){a++;b++;} if(!*b) want_quality=1;
+            a=p; b="highq"; while(*b && *a==*b){a++;b++;} if(!*b) want_quality=1;
+            a=p; b="fast"; while(*b && *a==*b){a++;b++;} if(!*b) want_fast=1;
+            if(want_quality || want_fast) {}
+        }
+        if (want_quality) { g_fb_high_quality = 1; printf("[fb] cmdline requests high-quality BILINEAR\n"); }
+        if (want_fast)    { g_fb_high_quality = 0; printf("[fb] cmdline requests FAST path\n"); }
         if (probe) {
             write(1, "\nPROBE_A\n", 9);
             unsigned long long t0 = __builtin_ia32_rdtsc();

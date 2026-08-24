@@ -11,7 +11,8 @@
 
 #define FTX_BUCKETS 64
 static struct kthread *ftx_bucket[FTX_BUCKETS];
-static volatile unsigned long ftx_lock;
+static volatile unsigned long ftx_locks[FTX_BUCKETS];
+static volatile unsigned long ftx_global_lock;
 
 static void sl_lock(volatile unsigned long *l)
 {
@@ -39,12 +40,12 @@ static unsigned ftx_hash(const void *key)
 void futex_wait(void *key)
 {
     struct kthread *me = gs_cur();
-    sl_lock(&ftx_lock);
-    me->state = TH_WAITING;
     unsigned b = ftx_hash(key);
+    sl_lock(&ftx_locks[b]);
+    me->state = TH_WAITING;
     me->wk_next = ftx_bucket[b];
     ftx_bucket[b] = me;
-    sl_unlock(&ftx_lock);
+    sl_unlock(&ftx_locks[b]);
     sched_switch_away();
 }
 
@@ -52,8 +53,8 @@ int futex_wake(void *key, int n)
 {
     int woke = 0;
     struct kthread *list = 0;
-    sl_lock(&ftx_lock);
     unsigned b = ftx_hash(key);
+    sl_lock(&ftx_locks[b]);
     while (n-- > 0 && ftx_bucket[b]) {
         struct kthread *t = ftx_bucket[b];
         ftx_bucket[b] = t->wk_next;
@@ -61,7 +62,7 @@ int futex_wake(void *key, int n)
         list = t;
         woke++;
     }
-    sl_unlock(&ftx_lock);
+    sl_unlock(&ftx_locks[b]);
     while (list) {
         struct kthread *nx = list->wk_next;
         sched_make_runnable(list);
@@ -72,8 +73,8 @@ int futex_wake(void *key, int n)
 }
 
 /* ---- shared spinlock used by pthread layer ------------------------------- */
-void kftx_lock(void) { sl_lock(&ftx_lock); }
-void kftx_unlock(void) { sl_unlock(&ftx_lock); }
+void kftx_lock(void) { sl_lock(&ftx_global_lock); }
+void kftx_unlock(void) { sl_unlock(&ftx_global_lock); }
 
 /* ---- join registration with proper ordering ------------------------------- */
 /* Returns 1 if target already DONE; else registers me as its single

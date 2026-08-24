@@ -39,6 +39,8 @@ extern unsigned long   rd_size;
 extern int  fb_init(int w, int h);
 extern void fb_set_scaler(int w, int h);
 extern void fb_render(const void *framep);
+extern void fb_set_quality(int high);
+extern int  g_fb_high_quality; /* 0 = speed (FAST_BILINEAR + fast YUV), 1 = precomputed BILINEAR */
 static AVRational        g_frate;
 static int               g_pace_on;
 /* decode-ahead ring: producer (decoder) parks frames, presenter pops them
@@ -266,10 +268,16 @@ int kmain(void)
 
 #ifdef FB_PLAYBACK
     if (fb_init(vs->codecpar->width, vs->codecpar->height) == 0) {
+        /* speed-favored by default: FAST_BILINEAR + SSE YUV fast path.
+         * To request precomputed high-quality SWS_BILINEAR, set:
+         *   g_fb_high_quality = 1;  // or fb_set_quality(1)
+         * before fb_set_scaler, or pass "quality" on kernel cmdline. */
+        // fb_set_quality(g_fb_high_quality); // already default 0
         fb_set_scaler(vs->codecpar->width, vs->codecpar->height);
         g_frate = fmt->streams[vidx]->avg_frame_rate;
-        printf("[fb] ramfb %dx%d XRGB8888 live - playing at source rate\n",
-               vs->codecpar->width, vs->codecpar->height);
+        printf("[fb] ramfb %dx%d XRGB8888 live - playing at source rate (%s)\n",
+               vs->codecpar->width, vs->codecpar->height,
+               g_fb_high_quality ? "high-quality BILINEAR" : "FAST_BILINEAR+fastYUV");
     } else {
         printf("[fb] ramfb init failed r=%d\n",
                fb_init(vs->codecpar->width, vs->codecpar->height));
@@ -312,12 +320,15 @@ int kmain(void)
         AVFrame *out = NULL;
         if (!sent_all) {
             if ((ret = av_read_frame(fmt, pkt)) < 0) sent_all = 1;
-            else if (pkt->stream_index != vidx) continue;
+            else if (pkt->stream_index != vidx) { av_packet_unref(pkt); continue; }
         }
         if (!sent_all) {
                 ret = avcodec_send_packet(ctx, pkt);
             if (ret < 0 && ret != AVERROR(EAGAIN))
                 { printf("[ff] send_packet err %d\n", ret); break; }
+            /* packet ref is intentionally leaked/reused per original harness;
+             * av_read_frame will overwrite pkt's buffer on next iteration.
+             * We only unref non-video packets above to avoid audio leak. */
         }
         ret = avcodec_receive_frame(ctx, frm);
         if (ret == 0) out = frm;
@@ -355,7 +366,7 @@ int kmain(void)
                  * the deadline grid; block (politely) when ring is full   */
                 while (g_rt - g_rh >= RING_N - 2) {
                     rp_pump();
-                    struct timespec ts = { 0, 150000 }; nanosleep(&ts, NULL);
+                    struct timespec ts = { 0, 100000 }; nanosleep(&ts, NULL);
                 }
                 av_frame_ref(g_ring[g_rt & RING_MASK], frm);
                 g_rt++;

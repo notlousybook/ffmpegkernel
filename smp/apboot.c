@@ -72,8 +72,19 @@ void lapic_enable(void)
         unsigned long long svr = msr_read(0x80F);
         msr_write(0x80F, (unsigned)(svr | ((1u << 8) | 0x3F)),
                   (unsigned)(svr >> 32));
+        /* program LVT Timer for TSC-deadline: vec 0x60, mode 10b, not masked */
+        unsigned long long lvt = msr_read(0x832);
+        lvt = (lvt & ~0xFFULL) | 0x60ULL | (2ULL << 17);
+        lvt &= ~(1ULL << 16); /* clear mask */
+        msr_write(0x832, (unsigned)lvt, (unsigned)(lvt>>32));
+        /* divide config 0x3E0 = 1 (not used for TSC-deadline but set) */
+        msr_write(0x83E, 0xB, 0);
     } else {
         *lapic(LAPIC_SPUR) |= (1u << 8) | 0x3F;/* enable, spurious vec      */
+        /* LVT Timer: TSC-deadline mode, vector SMP_TIMER_VEC, not masked */
+        *lapic(LAPIC_LVT_T) = (*lapic(LAPIC_LVT_T) & ~0xFF) | 0x60 | (2u << 17);
+        *lapic(LAPIC_LVT_T) &= ~(1u << 16);
+        *lapic(0x3E0) = 0xB; /* DCR Divide */
     }
 }
 
@@ -95,10 +106,13 @@ void ipi_one(unsigned dest, unsigned cmd)
 
 void ipi_all_excl_self(unsigned cmd)
 {
-    /* target each APIC id explicitly - shorthand quirks bite             */
-    for (unsigned id = 0; id < 8; id++) {
-        if (id == kcpus[0].id) continue;
-        ipi_one(id, cmd);
+    if (g_x2apic) {
+        msr_write(0x830, cmd | (3u << 18), 0);
+        return;
+    } else {
+        *lapic(LAPIC_ICRHI) = 0;
+        *lapic(LAPIC_ICRLO) = cmd | (3u << 18);
+        return;
     }
 }
 
