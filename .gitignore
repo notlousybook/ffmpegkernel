@@ -1,0 +1,17 @@
+# build outputs
+*.o
+*.elf
+*.bin
+kernel.map
+ref_bench
+
+# generated video blob (regenerate: see scripts/make-video-header.py)
+test.mp4
+test_mp4.h
+*.log
+
+# FFmpeg source & build tree (fetched by scripts/fetch-ffmpeg.sh)
+build/
+
+# local agent state
+.bridge/

@@ -1,0 +1,50 @@
+/* pthread.h - function declarations for FFmpeg's threading layer.
+ *
+ * TYPES ARE NOT DEFINED HERE ON PURPOSE: glibc's <bits/pthreadtypes.h>
+ * leaks into every TU via <stdlib.h>, so we adopt its opaque layouts.
+ * At runtime nothing interprets those blobs except smp/pthread_impl.c,
+ * which owns their contents entirely.
+ */
+#ifndef SHIM_PTHREAD_DECLS_H
+#define SHIM_PTHREAD_DECLS_H
+
+#ifndef _PTHREAD_H              /* glibc's guard: skip us if it already won */
+#define _PTHREAD_H
+#define __SHIM_PTHREAD_OWNED__  /* we provided the decls + macros below     */
+
+typedef unsigned long pthread_t;            /* our handle (tid)             */
+
+/* glibc-compatible initializer macros (zero-fill == glibc static inits)   */
+#ifndef PTHREAD_MUTEX_INITIALIZER
+#define PTHREAD_MUTEX_INITIALIZER { { 0 } }
+#endif
+#ifndef PTHREAD_ONCE_INIT
+#define PTHREAD_ONCE_INIT 0
+#endif
+
+int      pthread_create(pthread_t *t, const void *attr,
+                        void *(*fn)(void *), void *arg);
+int      pthread_join(pthread_t t, void **retval);
+int      pthread_detach(pthread_t t);
+pthread_t pthread_self(void);
+
+int      pthread_mutex_init(pthread_mutex_t *m, const void *attr);
+int      pthread_mutex_destroy(pthread_mutex_t *m);
+int      pthread_mutex_lock(pthread_mutex_t *m);
+int      pthread_mutex_trylock(pthread_mutex_t *m);
+int      pthread_mutex_unlock(pthread_mutex_t *m);
+
+int      pthread_cond_init(pthread_cond_t *c, const void *attr);
+int      pthread_cond_destroy(pthread_cond_t *c);
+int      pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m);
+int      pthread_cond_signal(pthread_cond_t *c);
+int      pthread_cond_broadcast(pthread_cond_t *c);
+
+int      pthread_once(pthread_once_t *o, void (*fn)(void));
+int      pthread_key_create(pthread_key_t *k, void (*dtor)(void *));
+int      pthread_key_delete(pthread_key_t k);
+int      pthread_setspecific(pthread_key_t k, const void *v);
+void    *pthread_getspecific(pthread_key_t k);
+
+#endif /* _PTHREAD_H */
+#endif /* SHIM_PTHREAD_DECLS_H */
